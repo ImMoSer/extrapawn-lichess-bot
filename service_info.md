@@ -39,8 +39,30 @@
 
 ```powershell
 cd C:\MY_APPS\CHESS_APP\extrapawn-lichess-bot
-python -m py_compile extrapawn/__init__.py extrapawn/config.py extrapawn/tiers.py extrapawn/clients.py extrapawn/opening_book.py extrapawn/engine.py homemade.py lib/config.py lib/conversation.py lib/lichess_bot.py tests/test_extrapawn.py tests/test_extrapawn_integration.py
-docker compose config --quiet
-docker build -t extrapawn-lichess-bot:verify .
-docker run --rm extrapawn-lichess-bot:verify python3 -m unittest discover -s tests -p "test_*.py" -v
+.\.venv\Scripts\python.exe -m py_compile extrapawn/__init__.py extrapawn/config.py extrapawn/tiers.py extrapawn/clients.py extrapawn/opening_book.py extrapawn/engine.py homemade.py lib/config.py lib/conversation.py lib/lichess_bot.py tests/test_extrapawn.py tests/test_extrapawn_integration.py
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v
+```
+
+*(При запущенном Docker Desktop дополнительно проверяется сборка образа: `docker compose config --quiet; docker build -t extrapawn-lichess-bot:verify .`)*
+
+---
+
+## 4. Единственная ветка `main` и синхронизация с `upstream`
+
+В репозитории `ImMoSer/extrapawn-lichess-bot` используется **единственная основная ветка `main`** (Default Branch на GitHub и ветка автодеплоя в Dokploy; устаревшая ветка `master` удалена). Оригинальный репозиторий подключён как `upstream` (`https://github.com/lichess-bot-devs/lichess-bot.git`, где основная ветка называется `master`).
+
+> **Важно:** Не используйте кнопку **«Sync fork»** в веб-интерфейсе GitHub напрямую в `main` без локального прогона тестов, так как `git push` в `main` мгновенно запускает продакшен-деплой в Dokploy.
+
+Безопасное обновление ядра `lichess-bot` при выходе критических изменений Lichess BOT API:
+
+```powershell
+cd C:\MY_APPS\CHESS_APP\extrapawn-lichess-bot
+git checkout main
+git pull origin main
+git fetch upstream
+git merge upstream/master
+# Если возник конфликт в публичном README.md — оставляем нашу витрину ExtraPawn:
+# git checkout --ours README.md; git add README.md
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v
+git push origin main
 ```
