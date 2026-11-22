@@ -30,6 +30,8 @@ class TestExtraPawnConfig(unittest.TestCase):
         self.assertEqual(cfg.book_min_games, 15)
         self.assertEqual(cfg.book_top_n, 5)
         self.assertAlmostEqual(cfg.engine_timeout_sec, 15.0)
+        self.assertAlmostEqual(cfg.min_move_delay_sec, 0.05)
+        self.assertAlmostEqual(cfg.max_move_delay_sec, 0.20)
 
     def test_overrides_and_trailing_slash_stripped(self) -> None:
         env = {

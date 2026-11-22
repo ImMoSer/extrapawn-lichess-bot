@@ -15,13 +15,11 @@ import chess
 from chess.engine import Limit
 import yaml
 
-from extrapawn.chat import truncate_chat
 from extrapawn.clients import (
     BestMoveResponse,
     BookMoveEntry,
     EngineHubClient,
     MozerBookResponse,
-    OpeningLookupResponse,
     TableServiceClient,
 )
 from extrapawn.engine import MozeroExtraPawnEngine
@@ -209,7 +207,7 @@ class TestMozeroExtraPawnEngine(unittest.TestCase):
 
 
 class TestChatAndConfigAndChallenges(unittest.TestCase):
-    def test_chat_commands_and_140_char_guard(self) -> None:
+    def test_chat_ignores_interactive_commands_while_greetings_work(self) -> None:
         game = _make_sample_game()
         with patch.dict(
             os.environ,
@@ -221,28 +219,13 @@ class TestChatAndConfigAndChallenges(unittest.TestCase):
         li_mock = MagicMock()
         conv = Conversation(game, engine, li_mock, "1.0", [])
 
-        for msg in ("!help", "!commands", "!info", "!style", "!style gambit", "!style unknown", ""):
-            conv.react(ChatLine({"room": "player", "username": "HumanPlayer", "text": msg}))
-        self.assertEqual(engine.book_style, "gambit")
+        for room in ("player", "spectator"):
+            for msg in ("!help", "!style gambit", "!opening", "!info", "!eval", "!wait", "!name", ""):
+                conv.react(ChatLine({"room": room, "username": "HumanPlayer", "text": msg}))
+        li_mock.chat.assert_not_called()
 
-        conv.react(ChatLine({"room": "spectator", "username": "Watcher", "text": "!style gm"}))
-        self.assertEqual(engine.book_style, "gambit")
-        conv.react(ChatLine({"room": "spectator", "username": "Watcher", "text": "!eval"}))
-        conv.react(ChatLine({"room": "player", "username": "HumanPlayer", "text": "!eval"}))
-
-        with patch.object(
-            engine.tableservice,
-            "lookup_opening",
-            return_value=OpeningLookupResponse(eco="B90", name="Sicilian Defense: Najdorf Variation" * 5),
-        ):
-            conv.react(ChatLine({"room": "player", "username": "HumanPlayer", "text": "!opening"}))
-
-        for call in li_mock.chat.call_args_list:
-            sent_text = call.args[2]
-            self.assertLessEqual(len(sent_text), lichess.MAX_CHAT_MESSAGE_LEN)
-            self.assertTrue(sent_text)
-
-        self.assertEqual(len(truncate_chat("x" * 200)), lichess.MAX_CHAT_MESSAGE_LEN)
+        conv.send_message("player", "Hi! Good luck!")
+        li_mock.chat.assert_called_once_with("game1234", "player", "Hi! Good luck!")
 
     def test_config_extrapawn_yml_validation_and_greetings(self) -> None:
         cfg_path = str(REPO_ROOT / "config.extrapawn.yml")
@@ -278,6 +261,8 @@ class TestChatAndConfigAndChallenges(unittest.TestCase):
         for key, template in raw_cfg["greeting"].items():
             rendered = template.format(opponent="TwentyCharUserName__", me="ExtraPawnCOM")
             self.assertLessEqual(len(rendered), lichess.MAX_CHAT_MESSAGE_LEN, f"greeting.{key} too long")
+            for forbidden in ("!help", "!style", "!opening", "!info", "!eval"):
+                self.assertNotIn(forbidden, rendered)
 
     def test_challenges_filter_humans_blitz_rapid_only(self) -> None:
         with patch.dict(os.environ, {"LICHESS_BOT_TOKEN": "lip_test_valid_token_123"}, clear=True):

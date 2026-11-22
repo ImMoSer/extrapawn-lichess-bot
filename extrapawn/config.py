@@ -78,8 +78,8 @@ class ExtraPawnConfig:
         book_top_n = _parse_int("BOT_BOOK_TOP_N", 5, min_value=1)
         engine_timeout_sec = _parse_float("BOT_ENGINE_TIMEOUT_SEC", 15.0, min_value=0.0, strictly_positive=True)
         book_timeout_sec = _parse_float("BOT_BOOK_TIMEOUT_SEC", 2.5, min_value=0.0, strictly_positive=True)
-        min_move_delay_sec = _parse_float("BOT_MIN_MOVE_DELAY_SEC", 0.35, min_value=0.0)
-        max_move_delay_sec = _parse_float("BOT_MAX_MOVE_DELAY_SEC", 1.25, min_value=0.0)
+        min_move_delay_sec = _parse_float("BOT_MIN_MOVE_DELAY_SEC", 0.05, min_value=0.0)
+        max_move_delay_sec = _parse_float("BOT_MAX_MOVE_DELAY_SEC", 0.20, min_value=0.0)
         low_time_threshold_sec = _parse_float("BOT_LOW_TIME_THRESHOLD_SEC", 25.0, min_value=0.0)
 
         if max_move_delay_sec < min_move_delay_sec:
