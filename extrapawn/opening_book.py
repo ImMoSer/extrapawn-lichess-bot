@@ -1,4 +1,4 @@
-"""Masters opening book move selection with quality guard and style modes."""
+"""Masters opening book move selection with adaptive tier quality guards and style modes."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from typing import Literal
 import chess
 
 from extrapawn.clients import BookMoveEntry, MozerBookResponse
+from extrapawn.tiers import TIER_2200, AdaptiveTierProfile
 
 BookStyle = Literal["auto", "gm", "sharp", "gambit"]
 
@@ -21,10 +22,7 @@ STYLE_TO_API_KEY: dict[str, str] = {
     "gambit": "schuler",
 }
 
-MIN_REL_CP_GUARD = -75
-MAX_REL_CP_DROP_FROM_BEST = 60
-MIN_POPULARITY_SHARE_OF_TOP = 0.05
-WEIGHT_EXPONENT = 0.7
+SIGNIFICANT_POPULARITY_SHARE_FLOOR = 0.03
 
 
 @dataclass(frozen=True)
@@ -93,26 +91,26 @@ def _select_styled_move(
 def choose_book_move(
     board: chess.Board,
     book: MozerBookResponse,
-    style: BookStyle,
-    min_games: int,
-    top_n: int,
+    tier: AdaptiveTierProfile = TIER_2200,
+    style: BookStyle = "auto",
     rng: random.Random | None = None,
 ) -> SelectedBookMove | None:
     """
-    Select an opening move from TABLESERVICE Masters book data.
+    Select an opening move from TABLESERVICE Masters book data scaled to `tier`.
 
     In 'gm', 'sharp', or 'gambit' style, prefers the corresponding TABLESERVICE
     style move and falls back to weighted random 'auto' if that style is absent.
-    In 'auto' mode, selects weighted-randomly from top sound master moves.
+    In 'auto' mode, filters moves by tier's `min_games`, `min_rel_cp`, and
+    `max_cp_drop`, then samples top `tier.top_n` moves weighted by `total ** tier.weight_exponent`.
     """
     if style != "auto":
-        styled = _select_styled_move(board, book, style, min_games)
+        styled = _select_styled_move(board, book, style, tier.min_games)
         if styled is not None:
             return styled
 
     candidates: list[tuple[BookMoveEntry, chess.Move]] = []
     for entry in book.moves:
-        if entry.total < min_games:
+        if entry.total < tier.min_games:
             continue
         move = _is_safe_book_move(board, entry.uci)
         if move is not None:
@@ -128,23 +126,24 @@ def choose_book_move(
             (entry, move)
             for entry, move in candidates
             if entry.rel_cp is None
-            or (entry.rel_cp >= MIN_REL_CP_GUARD and entry.rel_cp >= best_cp - MAX_REL_CP_DROP_FROM_BEST)
+            or (entry.rel_cp >= tier.min_rel_cp and entry.rel_cp >= best_cp - tier.max_cp_drop)
         ]
 
     if not candidates:
         return None
 
     candidates.sort(key=lambda pair: pair[0].total, reverse=True)
-    candidates = candidates[:top_n]
+    candidates = candidates[: tier.top_n]
 
-    top_total = candidates[0][0].total
-    candidates = [
-        (entry, move)
-        for entry, move in candidates
-        if entry.total >= top_total * MIN_POPULARITY_SHARE_OF_TOP
-    ]
+    if tier.significant_only:
+        top_total = candidates[0][0].total
+        candidates = [
+            (entry, move)
+            for entry, move in candidates
+            if entry.total >= top_total * SIGNIFICANT_POPULARITY_SHARE_FLOOR
+        ]
 
-    weights = [math.pow(entry.total, WEIGHT_EXPONENT) for entry, _ in candidates]
+    weights = [math.pow(entry.total, tier.weight_exponent) for entry, _ in candidates]
     chosen_entry, chosen_move = (rng or random).choices(candidates, weights=weights, k=1)[0]
 
     return SelectedBookMove(

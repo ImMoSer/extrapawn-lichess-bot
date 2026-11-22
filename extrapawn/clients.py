@@ -103,9 +103,14 @@ class EngineHubClient:
                 f"engine-hub unhealthy at {self.base_url}/health: HTTP {resp.status_code} ({resp.text[:200]})"
             )
 
-    def get_bestmove(self, start_fen: str, moves: list[str]) -> BestMoveResponse:
-        """Query MOZERO Bouncer V5.0 on engine-hub; retries once only on transient transport errors."""
-        payload = {"engine": "mozero", "start_fen": start_fen, "moves": moves}
+    def get_bestmove(
+        self,
+        start_fen: str,
+        moves: list[str],
+        engine: str = "maia_2200",
+    ) -> BestMoveResponse:
+        """Query MOZERO/Maia Bouncer on engine-hub; retries once only on transient transport errors."""
+        payload = {"engine": engine, "start_fen": start_fen, "moves": moves}
         url = f"{self.base_url}/bestmove"
         last_exc: Exception | None = None
 

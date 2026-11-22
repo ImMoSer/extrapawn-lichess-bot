@@ -1,4 +1,4 @@
-"""Integration unit tests for MozeroExtraPawnEngine, chat commands, config, challenges, and takebacks."""
+"""Integration unit tests for adaptive MozeroExtraPawnEngine, chat, config, challenges, and takebacks."""
 
 from __future__ import annotations
 
@@ -35,8 +35,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PLAY_RESULT_PLACEHOLDER = chess.engine.PlayResult(None, None)
 
 
-def _make_sample_game(*, mode: str = "casual", variant: str = "Standard", initial_fen: str = "startpos") -> model.Game:
+def _make_sample_game(
+    *,
+    mode: str = "casual",
+    variant: str = "Standard",
+    initial_fen: str = "startpos",
+    opp_rating: int | None = 1800,
+) -> model.Game:
     is_from_pos = variant == "From Position"
+    black_player: dict = {"name": "HumanPlayer", "title": None}
+    if opp_rating is not None:
+        black_player["rating"] = opp_rating
     payload = {
         "id": "game1234",
         "rated": mode == "rated",
@@ -46,7 +55,7 @@ def _make_sample_game(*, mode: str = "casual", variant: str = "Standard", initia
         "createdAt": 1700000000000,
         "clock": {"initial": 180000, "increment": 0},
         "white": {"name": "ExtraPawnCOM", "title": "BOT", "rating": 2200},
-        "black": {"name": "HumanPlayer", "title": None, "rating": 1800},
+        "black": black_player,
         "initialFen": initial_fen,
         "state": {
             "moves": "",
@@ -96,7 +105,7 @@ class TestMozeroExtraPawnEngine(unittest.TestCase):
             "TABLESERVICE_URL": "http://tableservice:5000",
             "BOT_MIN_MOVE_DELAY_SEC": "0.0",
             "BOT_MAX_MOVE_DELAY_SEC": "0.0",
-            "BOT_BOOK_MAX_PLY": "4",
+            "BOT_BOOK_MAX_PLY": "10",
         }
 
     def test_startup_healthcheck_fails_fast(self) -> None:
@@ -107,65 +116,124 @@ class TestMozeroExtraPawnEngine(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 MozeroExtraPawnEngine([], {}, None, Configuration({}), None, False)
 
-    def test_standard_uses_book_then_mozero_and_populates_stats(self) -> None:
-        book = MozerBookResponse(
-            total_games=500,
-            moves=[BookMoveEntry("e4", "e2e4", 500, 40.0, 30.0, 30.0, 20, "King's Pawn", "B00")],
-            styles={"grossmaster": "e2e4", "hustler": "e2e4", "schuler": "e2e4"},
-            wiki_name="Start Position",
-            wiki_eco=None,
-        )
-        empty_book = MozerBookResponse(
-            total_games=0,
-            moves=[],
-            styles={"grossmaster": None, "hustler": None, "schuler": None},
-            wiki_name=None,
-            wiki_eco=None,
-        )
-        mozero_res = BestMoveResponse(
-            best_move="d2d4",
-            engine="mozero",
-            mode="leelaHoldDraw",
-            source="lc0",
-            dtm=None,
-            time_real_ms=35.0,
-            player_tablebase=None,
-        )
-        game = _make_sample_game()
+    def test_adaptive_tier_selection_and_book_handoff_to_matching_maia(self) -> None:
+        for opp_rating, expected_engine, expected_sig in (
+            (1420, "maia_1500", False),
+            (1720, "maia_1700", False),
+            (1950, "maia_1900", False),
+            (2150, "maia_2200", True),
+            (None, "maia_2200", True),
+        ):
+            with self.subTest(opp_rating=opp_rating):
+                game = _make_sample_game(opp_rating=opp_rating)
+                with patch.dict(os.environ, self._env(), clear=True):
+                    engine = MozeroExtraPawnEngine(
+                        [], {"skip_startup_healthcheck": True}, None, Configuration({}), game, False
+                    )
+                self.assertEqual(engine.tier.engine_name, expected_engine)
+
+                book = MozerBookResponse(
+                    total_games=500,
+                    moves=[BookMoveEntry("e4", "e2e4", 500, 40.0, 30.0, 30.0, 20, "King's Pawn", "B00")],
+                    styles={"grossmaster": "e2e4", "hustler": "e2e4", "schuler": "e2e4"},
+                    wiki_name="Start Position",
+                    wiki_eco=None,
+                )
+                board = chess.Board()
+                limit = Limit(white_clock=180.0, black_clock=180.0)
+                with patch.object(engine.tableservice, "get_mozer_book", return_value=book) as mock_book:
+                    res1 = engine.search(board, limit, False, False, PLAY_RESULT_PLACEHOLDER)
+                self.assertEqual(res1.move.uci(), "e2e4")
+                mock_book.assert_called_once_with(board.fen(), significant_only=expected_sig)
+
+                empty_book = MozerBookResponse(
+                    total_games=0,
+                    moves=[],
+                    styles={"grossmaster": None, "hustler": None, "schuler": None},
+                    wiki_name=None,
+                    wiki_eco=None,
+                )
+                maia_res = BestMoveResponse(
+                    best_move="d2d4",
+                    engine=expected_engine,
+                    mode="leelaHoldDraw",
+                    source=expected_engine,
+                    dtm=None,
+                    time_real_ms=5.0,
+                    player_tablebase=None,
+                )
+                board.push_uci("e2e4")
+                board.push_uci("e7e5")
+                with (
+                    patch.object(engine.tableservice, "get_mozer_book", return_value=empty_book),
+                    patch.object(engine.engine_hub, "get_bestmove", return_value=maia_res) as mock_hub,
+                ):
+                    res2 = engine.search(board, limit, False, False, PLAY_RESULT_PLACEHOLDER)
+                self.assertEqual(res2.move.uci(), "d2d4")
+                mock_hub.assert_called_once_with(
+                    start_fen="startpos",
+                    moves=["e2e4", "e7e5"],
+                    engine=expected_engine,
+                )
+                engine.notify("quit")
+
+    def test_probabilistic_memory_dropout_permanently_closes_book(self) -> None:
+        game = _make_sample_game(opp_rating=1450)  # maia_1500, memory_keep_prob=0.55
         with patch.dict(os.environ, self._env(), clear=True):
             engine = MozeroExtraPawnEngine([], {"skip_startup_healthcheck": True}, None, Configuration({}), game, False)
 
         board = chess.Board()
-        limit = Limit(white_clock=180.0, black_clock=180.0)
-        with patch.object(engine.tableservice, "get_mozer_book", return_value=book) as mock_book:
-            res1 = engine.search(board, limit, False, False, PLAY_RESULT_PLACEHOLDER)
-        self.assertEqual(res1.move.uci(), "e2e4")
-        self.assertEqual(mock_book.call_count, 1)
+        for uci in ("e2e4", "e7e5", "g1f3", "b8c6"):
+            board.push_uci(uci)  # ply == 4 >= BOOK_MEMORY_CHECK_START_PLY
 
-        board.push_uci("e2e4")
-        board.push_uci("e7e5")
+        maia_res = BestMoveResponse(
+            best_move="f1c4",
+            engine="maia_1500",
+            mode="leelaHoldDraw",
+            source="maia_1500",
+            dtm=None,
+            time_real_ms=3.0,
+            player_tablebase=None,
+        )
+        # Force rng.random() = 0.99 > 0.55 -> triggers memory drop-out!
         with (
-            patch.object(engine.tableservice, "get_mozer_book", return_value=empty_book),
-            patch.object(engine.engine_hub, "get_bestmove", return_value=mozero_res) as mock_hub,
+            patch.object(engine._rng, "random", return_value=0.99),
+            patch.object(engine.tableservice, "get_mozer_book") as mock_book,
+            patch.object(engine.engine_hub, "get_bestmove", return_value=maia_res) as mock_hub,
         ):
-            res2 = engine.search(board, limit, False, False, PLAY_RESULT_PLACEHOLDER)
-        self.assertEqual(res2.move.uci(), "d2d4")
-        mock_hub.assert_called_once_with(start_fen="startpos", moves=["e2e4", "e7e5"])
+            res = engine.search(board, Limit(white_clock=180.0), False, False, PLAY_RESULT_PLACEHOLDER)
+        self.assertTrue(engine._memory_dropped_out)
+        mock_book.assert_not_called()
+        mock_hub.assert_called_once()
+        self.assertEqual(res.move.uci(), "f1c4")
 
-        engine.add_comment(res2, board)
-        stats = engine.get_stats(for_chat=True)
-        self.assertTrue(stats)
-        joined = ", ".join(stats)
-        self.assertIn("Mozero (leelaHoldDraw/lc0)", joined)
-        self.assertLessEqual(len(joined), lichess.MAX_CHAT_MESSAGE_LEN)
+        # Subsequent move must also skip book completely even if rng.random() == 0.01
+        board.push_uci("f1c4")
+        board.push_uci("g8f6")
+        maia_res2 = BestMoveResponse(
+            best_move="d2d3",
+            engine="maia_1500",
+            mode="leelaHoldDraw",
+            source="maia_1500",
+            dtm=None,
+            time_real_ms=3.0,
+            player_tablebase=None,
+        )
+        with (
+            patch.object(engine._rng, "random", return_value=0.01),
+            patch.object(engine.tableservice, "get_mozer_book") as mock_book2,
+            patch.object(engine.engine_hub, "get_bestmove", return_value=maia_res2),
+        ):
+            engine.search(board, Limit(white_clock=180.0), False, False, PLAY_RESULT_PLACEHOLDER)
+        mock_book2.assert_not_called()
         engine.notify("quit")
 
     def test_from_position_skips_book_and_passes_custom_fen(self) -> None:
         endgame_fen = "8/8/8/8/4k3/8/4P3/4K3 w - - 0 1"
-        game = _make_sample_game(mode="casual", variant="From Position", initial_fen=endgame_fen)
-        mozero_res = BestMoveResponse(
+        game = _make_sample_game(mode="casual", variant="From Position", initial_fen=endgame_fen, opp_rating=1500)
+        maia_res = BestMoveResponse(
             best_move="e1d2",
-            engine="mozero",
+            engine="maia_1500",
             mode="leelaPunishUser",
             source="gaviota",
             dtm=19,
@@ -179,21 +247,22 @@ class TestMozeroExtraPawnEngine(unittest.TestCase):
         limit = Limit(white_clock=180.0, black_clock=180.0)
         with (
             patch.object(engine.tableservice, "get_mozer_book") as mock_book,
-            patch.object(engine.engine_hub, "get_bestmove", return_value=mozero_res) as mock_hub,
+            patch.object(engine.engine_hub, "get_bestmove", return_value=maia_res) as mock_hub,
         ):
             res = engine.search(board, limit, False, False, PLAY_RESULT_PLACEHOLDER)
         mock_book.assert_not_called()
-        mock_hub.assert_called_once_with(start_fen=endgame_fen, moves=[])
+        mock_hub.assert_called_once_with(start_fen=endgame_fen, moves=[], engine="maia_1500")
         self.assertEqual(res.move.uci(), "e1d2")
         self.assertIn("DTM=19", str(res.info.get("string", "")))
+        engine.notify("quit")
 
     def test_illegal_move_from_hub_raises(self) -> None:
         game = _make_sample_game()
         bad_res = BestMoveResponse(
             best_move="e1e8",
-            engine="mozero",
+            engine="maia_1900",
             mode="leelaHoldDraw",
-            source="lc0",
+            source="maia_1900",
             dtm=None,
             time_real_ms=10.0,
             player_tablebase=None,
@@ -204,6 +273,7 @@ class TestMozeroExtraPawnEngine(unittest.TestCase):
         with patch.object(engine.engine_hub, "get_bestmove", return_value=bad_res):
             with self.assertRaises(RuntimeError):
                 engine.search(chess.Board(), Limit(white_clock=180.0), False, False, PLAY_RESULT_PLACEHOLDER)
+        engine.notify("quit")
 
 
 class TestChatAndConfigAndChallenges(unittest.TestCase):
@@ -226,6 +296,7 @@ class TestChatAndConfigAndChallenges(unittest.TestCase):
 
         conv.send_message("player", "Hi! Good luck!")
         li_mock.chat.assert_called_once_with("game1234", "player", "Hi! Good luck!")
+        engine.notify("quit")
 
     def test_config_extrapawn_yml_validation_and_greetings(self) -> None:
         cfg_path = str(REPO_ROOT / "config.extrapawn.yml")
@@ -252,7 +323,7 @@ class TestChatAndConfigAndChallenges(unittest.TestCase):
         ):
             loaded = bot_config.load_config(cfg_path)
             with create_engine(loaded) as eng:
-                self.assertEqual(eng.name(), "ExtraPawn Mozero V5")
+                self.assertEqual(eng.name(), "ExtraPawn Adaptive Maia")
             mock_hub_health.assert_called_once()
             mock_tb_health.assert_called_once()
 

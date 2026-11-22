@@ -1,4 +1,4 @@
-"""Homemade MinimalEngine adapter connecting lichess-bot to Mozero and TABLESERVICE."""
+"""Homemade MinimalEngine adapter connecting lichess-bot to adaptive Maia tiers and TABLESERVICE."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from chess.engine import Limit, PlayResult
 from extrapawn.clients import BestMoveResponse, EngineHubClient, TableServiceClient
 from extrapawn.config import ExtraPawnConfig
 from extrapawn.opening_book import BookStyle, choose_book_move
+from extrapawn.tiers import AdaptiveTierProfile, select_tier_for_rating
 from lib import model
 from lib.config import Configuration
 from lib.engine_wrapper import FillerEngine, MinimalEngine
@@ -20,9 +21,11 @@ from lib.lichess_types import COMMANDS_TYPE, MOVE, OPTIONS_GO_EGTB_TYPE
 
 logger = logging.getLogger(__name__)
 
+BOOK_MEMORY_CHECK_START_PLY = 4
+
 
 class MozeroExtraPawnEngine(MinimalEngine):
-    """Lichess-bot homemade engine backed by TABLESERVICE Masters Book and engine-hub mozero."""
+    """Lichess-bot homemade engine backed by TABLESERVICE Masters Book and adaptive Maia tiers on engine-hub."""
 
     def __init__(
         self,
@@ -34,9 +37,9 @@ class MozeroExtraPawnEngine(MinimalEngine):
         debug: bool,
         **popen_args: str,
     ) -> None:
-        """Initialize HTTP clients, per-game book state, and startup health verification."""
+        """Initialize HTTP clients, opponent-matched Maia tier, book state, and startup health check."""
         super().__init__(commands, options, stderr, draw_or_resign, game, debug, **popen_args)
-        self.engine_name = "ExtraPawn Mozero V5"
+        self.engine_name = "ExtraPawn Adaptive Maia"
         self.engine = FillerEngine(self, name=self.engine_name)
         self.game = game
         self.extrapawn_cfg = ExtraPawnConfig.from_env()
@@ -48,11 +51,26 @@ class MozeroExtraPawnEngine(MinimalEngine):
             base_url=self.extrapawn_cfg.tableservice_url,
             timeout_sec=self.extrapawn_cfg.book_timeout_sec,
         )
+
+        opp_rating = (
+            game.opponent.rating
+            if (game is not None and isinstance(game.opponent.rating, int))
+            else None
+        )
+        self.tier: AdaptiveTierProfile = select_tier_for_rating(opp_rating)
         self.book_style: BookStyle = "auto"
         self.last_opening_eco: str | None = None
         self.last_opening_name: str | None = None
         self._out_of_book_streak: int = 0
+        self._memory_dropped_out: bool = False
+        self._rng = random.Random()
         self.last_mozero_response: BestMoveResponse | None = None
+
+        if game is not None:
+            logger.info(
+                f"Game {game.id} vs {game.opponent.name} (rating={opp_rating}) -> "
+                f"selected adaptive tier {self.tier.engine_name}"
+            )
 
         skip_health = bool(options.get("skip_startup_healthcheck", False))
         if game is None and not skip_health:
@@ -63,41 +81,6 @@ class MozeroExtraPawnEngine(MinimalEngine):
         """Update the opening book style for this game and reset out-of-book streak."""
         self.book_style = style
         self._out_of_book_streak = 0
-
-    def get_opening_summary(self, start_fen: str, moves: list[str]) -> str:
-        """Return a concise opening description for chat (!opening)."""
-        if self._is_from_position(start_fen):
-            return "Custom position (From Position) - powered by ExtraPawn Mozero."
-
-        board = chess.Board()
-        for move_uci in moves:
-            try:
-                move_obj = chess.Move.from_uci(move_uci)
-            except ValueError:
-                break
-            if not board.is_legal(move_obj):
-                break
-            board.push(move_obj)
-
-        eco = self.last_opening_eco
-        name = self.last_opening_name
-        try:
-            lookup = self.tableservice.lookup_opening(
-                fen=board.fen(),
-                start_fen="startpos",
-                played_moves_uci=moves,
-            )
-            if lookup.name:
-                name = lookup.name
-                eco = lookup.eco
-        except RuntimeError as exc:
-            logger.warning(f"Opening lookup failed during !opening chat command: {exc}")
-
-        if name and eco:
-            return f"Opening: {eco} {name}"
-        if name:
-            return f"Opening: {name}"
-        return "Opening not in theory database yet."
 
     def _resolve_start_fen(self, board: chess.Board) -> str:
         if self.game is not None and self.game.initial_fen:
@@ -130,16 +113,29 @@ class MozeroExtraPawnEngine(MinimalEngine):
         own_clock = self._get_own_clock_sec(board, time_limit)
         if own_clock is None or own_clock <= self.extrapawn_cfg.low_time_threshold_sec:
             return
-        target_delay = random.uniform(self.extrapawn_cfg.min_move_delay_sec, max_delay)
+        target_delay = self._rng.uniform(self.extrapawn_cfg.min_move_delay_sec, max_delay)
         remaining = target_delay - elapsed_sec
         if remaining > 0.0:
             time.sleep(remaining)
 
     def _try_masters_book(self, board: chess.Board, t0: float, time_limit: Limit) -> PlayResult | None:
+        ply = len(board.move_stack)
+        if ply >= BOOK_MEMORY_CHECK_START_PLY and self.tier.memory_keep_prob < 1.0:
+            if self._rng.random() > self.tier.memory_keep_prob:
+                self._memory_dropped_out = True
+                logger.info(
+                    f"Opening memory drop-out at ply {ply} for tier {self.tier.engine_name}; "
+                    "handing over rest of game to Maia."
+                )
+                return None
+
         try:
-            book = self.tableservice.get_mozer_book(board.fen(), significant_only=True)
+            book = self.tableservice.get_mozer_book(
+                board.fen(),
+                significant_only=self.tier.significant_only,
+            )
         except RuntimeError as exc:
-            logger.error(f"TABLESERVICE opening book failed, handing over to Mozero: {exc}")
+            logger.error(f"TABLESERVICE opening book failed, handing over to {self.tier.engine_name}: {exc}")
             self._out_of_book_streak += 1
             return None
 
@@ -150,9 +146,9 @@ class MozeroExtraPawnEngine(MinimalEngine):
         selected = choose_book_move(
             board=board,
             book=book,
+            tier=self.tier,
             style=self.book_style,
-            min_games=self.extrapawn_cfg.book_min_games,
-            top_n=self.extrapawn_cfg.book_top_n,
+            rng=self._rng,
         )
         if selected is None:
             self._out_of_book_streak += 1
@@ -169,7 +165,7 @@ class MozeroExtraPawnEngine(MinimalEngine):
             selected.move,
             None,
             info={
-                "string": f"lichess-bot-source:Masters Book ({selected.style_used})",
+                "string": f"lichess-bot-source:Masters Book ({self.tier.engine_name}/{selected.style_used})",
                 "time": elapsed_total,
             },
             draw_offered=False,
@@ -184,13 +180,14 @@ class MozeroExtraPawnEngine(MinimalEngine):
         draw_offered: bool,  # noqa: ARG002
         root_moves: MOVE,  # noqa: ARG002
     ) -> PlayResult:
-        """Choose a move from Masters Book (early standard games) or engine-hub MOZERO Bouncer V5.0."""
+        """Choose a move from tier-adapted Masters Book or engine-hub Maia tier (nodes=1)."""
         t0 = time.perf_counter()
         start_fen = self._resolve_start_fen(board)
         moves = [move.uci() for move in board.move_stack]
 
         if (
             not self._is_from_position(start_fen)
+            and not self._memory_dropped_out
             and len(moves) < self.extrapawn_cfg.book_max_ply
             and self._out_of_book_streak < 2
         ):
@@ -198,7 +195,11 @@ class MozeroExtraPawnEngine(MinimalEngine):
             if book_result is not None:
                 return book_result
 
-        res = self.engine_hub.get_bestmove(start_fen=start_fen, moves=moves)
+        res = self.engine_hub.get_bestmove(
+            start_fen=start_fen,
+            moves=moves,
+            engine=self.tier.engine_name,
+        )
         try:
             move = chess.Move.from_uci(res.best_move)
         except ValueError as exc:
@@ -207,7 +208,7 @@ class MozeroExtraPawnEngine(MinimalEngine):
             raise RuntimeError(f"engine-hub returned illegal move '{res.best_move}' for FEN '{board.fen()}'")
 
         self.last_mozero_response = res
-        source_label = f"Mozero ({res.mode}/{res.source})"
+        source_label = f"{self.tier.engine_name} ({res.mode}/{res.source})"
         if res.dtm is not None and res.dtm != 0:
             source_label = f"{source_label} DTM={res.dtm}"
 
