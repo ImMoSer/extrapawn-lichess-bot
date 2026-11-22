@@ -1,0 +1,35 @@
+services:
+  extrapawn-lichess-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: extrapawn-lichess-bot
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - dokploy-network
+    env_file:
+      - path: .env_local
+        required: false
+      - path: .env
+        required: false
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import pathlib, sys; sys.exit(0 if any('lichess-bot.py' in p.read_text(errors='ignore') for p in pathlib.Path('/proc').glob('[0-9]*/cmdline')) else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+networks:
+  dokploy-network:
+    external: true

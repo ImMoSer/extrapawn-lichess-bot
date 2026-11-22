@@ -56,8 +56,8 @@ class Conversation:
         """
         self.messages.append(line)
         logger.info(f"*** {self.game.url()} [{line.room}] {line.username}: {line.text}")
-        if line.text[0] == self.command_prefix:
-            self.command(line, line.text[1:].lower())
+        if line.text and line.text[0] == self.command_prefix:
+            self.command(line, line.text[1:].strip().lower())
 
     def command(self, line: ChatLine, cmd: str) -> None:
         """
@@ -66,6 +66,10 @@ class Conversation:
         :param line: Information about the message.
         :param cmd: The command to react to.
         """
+        from extrapawn.chat import handle_extrapawn_command
+
+        if handle_extrapawn_command(self, line, cmd):
+            return
         from_self = line.username == self.game.username
         is_eval = cmd.startswith("eval")
         if cmd in ("commands", "help"):

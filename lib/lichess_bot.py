@@ -729,6 +729,7 @@ def play_game(li: lichess.Lichess,
 
             takebacks_accepted = read_takeback_record(game)
             max_takebacks_accepted = config.max_takebacks_accepted
+            effective_max_takebacks = 0 if game.mode == "rated" else max_takebacks_accepted
 
             keyword_map: defaultdict[str, str] = defaultdict(str, me=game.me.name, opponent=game.opponent.name)
             hello = get_greeting("hello", config.greeting, keyword_map)
@@ -780,7 +781,7 @@ def play_game(li: lichess.Lichess,
                             conversation.send_message("spectator", goodbye_spectators)
                         elif (takeback_field
                                 and not bot_to_move(game, board)
-                                and li.accept_takeback(game.id, takebacks_accepted < max_takebacks_accepted)):
+                                and li.accept_takeback(game.id, takebacks_accepted < effective_max_takebacks)):
                             takebacks_accepted += 1
                             record_takeback(game, takebacks_accepted)
                             engine.discard_last_move_commentary()
@@ -888,6 +889,7 @@ def read_takeback_record(game: model.Game) -> int:
 
 def record_takeback(game: model.Game, accepted_count: int) -> None:
     """Record the number of move takeback requests accepted in a game."""
+    os.makedirs(auto_log_directory, exist_ok=True)
     with open(takeback_record_file_name(game.id), "w") as takeback_file:
         takeback_file.write(str(accepted_count))
 

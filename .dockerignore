@@ -1,0 +1,16 @@
+.git
+.github
+.env
+.env*
+.venv
+**/__pycache__
+*.pyc
+*.pyo
+*.log
+*.pgn
+lichess_bot_auto_logs/
+TEMP/
+docs/
+wiki/
+.vscode/
+.vs/

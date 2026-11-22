@@ -289,6 +289,10 @@ def log_config(CONFIG: CONFIG_DICT_TYPE, alternate_log_function: Callable[[str],
 def validate_config(CONFIG: CONFIG_DICT_TYPE) -> None:
     """Check if the config is valid."""
     check_config_section(CONFIG, "token", str)
+    config_assert(
+        bool(CONFIG["token"].strip()) and CONFIG["token"] != "REPLACE_VIA_LICHESS_BOT_TOKEN_ENV",
+        "LICHESS_BOT_TOKEN environment variable must be set (missing or placeholder token detected).",
+    )
     check_config_section(CONFIG, "url", str)
     check_config_section(CONFIG, "engine", dict)
     check_config_section(CONFIG, "challenge", dict)

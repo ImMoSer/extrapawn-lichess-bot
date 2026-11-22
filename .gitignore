@@ -1,4 +1,12 @@
 *.yml
+!docker-compose.yml
+!config.extrapawn.yml
+!.github/workflows/*.yml
+!lib/versioning.yml
+.env
+.env_local
+.env_dokploy
+.venv/
 **/__pycache__
 /engines/*
 !/engines/README.md

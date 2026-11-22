@@ -1,0 +1,139 @@
+token: "REPLACE_VIA_LICHESS_BOT_TOKEN_ENV"    # Overridden at runtime by LICHESS_BOT_TOKEN env var
+url: "https://lichess.org/"
+
+engine:
+  dir: "./engines/"
+  name: "MozeroExtraPawnEngine"
+  working_dir: ""
+  protocol: "homemade"
+  ponder: false
+  debug: false
+  silence_stderr: false
+
+  polyglot:
+    enabled: false
+    min_weight: 1
+    selection: "weighted_random"
+    max_depth: 20
+    normalization: "none"
+
+  draw_or_resign:
+    resign_enabled: false
+    resign_score: -1000
+    resign_for_egtb_minus_two: false
+    resign_moves: 3
+    offer_draw_enabled: false
+    offer_draw_score: 0
+    offer_draw_for_egtb_zero: false
+    offer_draw_moves: 10
+    offer_draw_pieces: 10
+
+  online_moves:
+    max_out_of_book_moves: 10
+    max_retries: 2
+    chessdb_book:
+      enabled: false
+      min_time: 20
+      max_time: 10800
+      move_quality: "good"
+      min_depth: 20
+    lichess_cloud_analysis:
+      enabled: false
+      min_time: 20
+      max_time: 10800
+      move_quality: "best"
+      max_score_difference: 50
+      min_depth: 20
+      min_knodes: 0
+    lichess_opening_explorer:
+      enabled: false
+      min_time: 20
+      max_time: 10800
+      source: "masters"
+      player_name: ""
+      sort: "winrate"
+      min_games: 10
+    online_egtb:
+      enabled: false
+      min_time: 20
+      max_time: 10800
+      max_pieces: 7
+      source: "lichess"
+      move_quality: "best"
+
+  lichess_bot_tbs:
+    syzygy:
+      enabled: false
+      paths:
+        - "./syzygy"
+      max_pieces: 7
+      move_quality: "best"
+    gaviota:
+      enabled: false
+      paths:
+        - "./gaviota"
+      max_pieces: 5
+      min_dtm_to_consider_as_wdl_1: 120
+      move_quality: "best"
+
+  homemade_options: {}
+
+abort_time: 30
+fake_think_time: false
+rate_limiting_delay: 0
+move_overhead: 1500
+max_takebacks_accepted: 5
+quit_after_all_games_finish: true
+
+correspondence:
+  move_time: 60
+  checkin_period: 600
+  disconnect_time: 300
+  ponder: false
+
+challenge:
+  concurrency: 2
+  games_reserved_for_humans: 2
+  sort_by: "best"
+  preference: "human"
+  accept_bot: false
+  only_bot: false
+  max_increment: 30
+  min_increment: 0
+  max_base: 1800
+  min_base: 0
+  max_days: 14
+  min_days: 1
+  variants:
+    - standard
+    - fromPosition
+  time_controls:
+    - blitz
+    - rapid
+  modes:
+    - casual
+    - rated
+  max_simultaneous_games_per_user: 1
+
+greeting:
+  hello: "Hi {opponent}! I'm ExtraPawn Mozero. Type !help for opening styles & commands. Good luck!"
+  goodbye: "Good game, {opponent}! Type !opening or !info anytime."
+  hello_spectators: "Hi! ExtraPawn Mozero sparring bot. Type !eval for live engine mode or !info."
+  goodbye_spectators: "Thanks for watching!"
+
+matchmaking:
+  allow_matchmaking: false
+  allow_during_games: false
+  challenge_variant: "random"
+  challenge_timeout: 30
+  challenge_initial_time:
+    - 180
+    - 300
+  challenge_increment:
+    - 0
+    - 2
+  opponent_rating_difference: 300
+  rating_preference: "none"
+  challenge_mode: "random"
+  challenge_filter: "none"
+  include_challenge_block_list: false
