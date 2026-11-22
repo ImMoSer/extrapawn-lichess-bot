@@ -731,7 +731,12 @@ def play_game(li: lichess.Lichess,
             max_takebacks_accepted = config.max_takebacks_accepted
             effective_max_takebacks = 0 if game.mode == "rated" else max_takebacks_accepted
 
-            keyword_map: defaultdict[str, str] = defaultdict(str, me=game.me.name, opponent=game.opponent.name)
+            keyword_map: defaultdict[str, str] = defaultdict(
+                str,
+                me=game.me.name,
+                opponent=game.opponent.name,
+                engine=engine.name(),
+            )
             hello = get_greeting("hello", config.greeting, keyword_map)
             goodbye = get_greeting("goodbye", config.greeting, keyword_map)
             hello_spectators = get_greeting("hello_spectators", config.greeting, keyword_map)

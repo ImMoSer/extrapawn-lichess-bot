@@ -1,4 +1,4 @@
-"""Unit tests for extrapawn configuration, adaptive tiers, HTTP clients, and Masters book selection."""
+"""Unit tests for extrapawn configuration, Variant C MOZERO tiers, HTTP clients, and Masters book selection."""
 
 from __future__ import annotations
 
@@ -18,7 +18,15 @@ from extrapawn.clients import (
 )
 from extrapawn.config import ExtraPawnConfig
 from extrapawn.opening_book import choose_book_move
-from extrapawn.tiers import TIER_1500, TIER_1700, TIER_1900, TIER_2200, select_tier_for_rating
+from extrapawn.tiers import (
+    TIER_1500,
+    TIER_1700,
+    TIER_1900,
+    TIER_2200,
+    TIER_FULL_POWER,
+    select_tier_for_game,
+    select_tier_for_rating,
+)
 
 
 class TestExtraPawnConfig(unittest.TestCase):
@@ -69,20 +77,54 @@ class TestExtraPawnConfig(unittest.TestCase):
 
 
 class TestAdaptiveTiers(unittest.TestCase):
-    def test_rating_to_tier_boundaries(self) -> None:
+    def test_casual_rating_to_tier_boundaries(self) -> None:
+        self.assertEqual(select_tier_for_rating(None), TIER_1500)
         self.assertEqual(select_tier_for_rating(1200), TIER_1500)
-        self.assertEqual(select_tier_for_rating(1599), TIER_1500)
-        self.assertEqual(select_tier_for_rating(1600), TIER_1700)
-        self.assertEqual(select_tier_for_rating(1799), TIER_1700)
-        self.assertEqual(select_tier_for_rating(1800), TIER_1900)
-        self.assertEqual(select_tier_for_rating(2049), TIER_1900)
-        self.assertEqual(select_tier_for_rating(2050), TIER_2200)
-        self.assertEqual(select_tier_for_rating(2500), TIER_2200)
-        self.assertEqual(select_tier_for_rating(None), TIER_2200)
+        self.assertEqual(select_tier_for_rating(1800), TIER_1500)
+        self.assertEqual(select_tier_for_rating(1801), TIER_1700)
+        self.assertEqual(select_tier_for_rating(2000), TIER_1700)
+        self.assertEqual(select_tier_for_rating(2001), TIER_1900)
+        self.assertEqual(select_tier_for_rating(2200), TIER_1900)
+        self.assertEqual(select_tier_for_rating(2201), TIER_2200)
+        self.assertEqual(select_tier_for_rating(2600), TIER_2200)
+
+    def test_variant_c_3way_game_routing(self) -> None:
+        # 1. From Position always selects MOZERO-FullPower ('mozero')
+        fp_low = select_tier_for_game(is_from_position=True, is_rated=False, opponent_rating=1300)
+        fp_high = select_tier_for_game(is_from_position=True, is_rated=False, opponent_rating=2500)
+        self.assertEqual(fp_low, TIER_FULL_POWER)
+        self.assertEqual(fp_high, TIER_FULL_POWER)
+        self.assertEqual(fp_low.display_name, "MOZERO-FullPower")
+        self.assertEqual(fp_low.engine_name, "mozero")
+        self.assertFalse(fp_low.use_opening_book)
+
+        # 2. Rated Standard always selects fixed MOZERO-2200 ('maia_2200') regardless of opponent rating
+        for r in (None, 1300, 1750, 1950, 2400):
+            tier = select_tier_for_game(is_from_position=False, is_rated=True, opponent_rating=r)
+            self.assertEqual(tier, TIER_2200)
+            self.assertEqual(tier.display_name, "MOZERO-2200")
+
+        # 3. Casual Standard adapts across MOZERO-1500..2200
+        self.assertEqual(
+            select_tier_for_game(is_from_position=False, is_rated=False, opponent_rating=None).display_name,
+            "MOZERO-1500",
+        )
+        self.assertEqual(
+            select_tier_for_game(is_from_position=False, is_rated=False, opponent_rating=1850).display_name,
+            "MOZERO-1700",
+        )
+        self.assertEqual(
+            select_tier_for_game(is_from_position=False, is_rated=False, opponent_rating=2100).display_name,
+            "MOZERO-1900",
+        )
+        self.assertEqual(
+            select_tier_for_game(is_from_position=False, is_rated=False, opponent_rating=2300).display_name,
+            "MOZERO-2200",
+        )
 
 
 class TestClients(unittest.TestCase):
-    def test_engine_hub_retries_once_and_sends_requested_maia_engine(self) -> None:
+    def test_engine_hub_retries_once_and_sends_requested_engine(self) -> None:
         client = EngineHubClient("http://engine-hub:5000", timeout_sec=5.0)
         ok_resp = MagicMock(status_code=200)
         ok_resp.json.return_value = {
@@ -182,8 +224,8 @@ class TestOpeningBookSelection(unittest.TestCase):
             chosen = choose_book_move(board, book, tier=TIER_2200, style="auto", rng=rng_2200)
             assert chosen is not None
             seen_2200.add(chosen.move.uci())
-        self.assertNotIn("f2f4", seen_2200)  # rejected on 2200 (min_games=20 & rel_cp=-125 < -50)
-        self.assertNotIn("g2g4", seen_2200)  # rejected on all tiers (rel_cp=-210)
+        self.assertNotIn("f2f4", seen_2200)
+        self.assertNotIn("g2g4", seen_2200)
         self.assertGreaterEqual(len(seen_2200), 3)
 
         seen_1500: set[str] = set()
@@ -192,8 +234,8 @@ class TestOpeningBookSelection(unittest.TestCase):
             chosen = choose_book_move(board, book, tier=TIER_1500, style="auto", rng=rng_1500)
             assert chosen is not None
             seen_1500.add(chosen.move.uci())
-        self.assertIn("f2f4", seen_1500)     # allowed on 1500 (8 >= 2 games & -125 >= -180)
-        self.assertNotIn("g2g4", seen_1500)  # still blocks -210 blunder
+        self.assertIn("f2f4", seen_1500)
+        self.assertNotIn("g2g4", seen_1500)
 
     def test_styles_and_fallback_to_auto(self) -> None:
         board = chess.Board()

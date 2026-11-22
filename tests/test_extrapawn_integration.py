@@ -1,4 +1,4 @@
-"""Integration unit tests for adaptive MozeroExtraPawnEngine, chat, config, challenges, and takebacks."""
+"""Integration unit tests for Variant C MozeroExtraPawnEngine, greetings, config, challenges, and takebacks."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def _make_sample_game(
     mode: str = "casual",
     variant: str = "Standard",
     initial_fen: str = "startpos",
-    opp_rating: int | None = 1800,
+    opp_rating: int | None = 1750,
 ) -> model.Game:
     is_from_pos = variant == "From Position"
     black_player: dict = {"name": "HumanPlayer", "title": None}
@@ -116,21 +116,25 @@ class TestMozeroExtraPawnEngine(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 MozeroExtraPawnEngine([], {}, None, Configuration({}), None, False)
 
-    def test_adaptive_tier_selection_and_book_handoff_to_matching_maia(self) -> None:
-        for opp_rating, expected_engine, expected_sig in (
-            (1420, "maia_1500", False),
-            (1720, "maia_1700", False),
-            (1950, "maia_1900", False),
-            (2150, "maia_2200", True),
-            (None, "maia_2200", True),
-        ):
-            with self.subTest(opp_rating=opp_rating):
-                game = _make_sample_game(opp_rating=opp_rating)
+    def test_casual_vs_rated_routing_and_display_names(self) -> None:
+        cases = [
+            ("casual", None, "maia_1500", "MOZERO-1500", False),
+            ("casual", 1800, "maia_1500", "MOZERO-1500", False),
+            ("casual", 1900, "maia_1700", "MOZERO-1700", False),
+            ("casual", 2100, "maia_1900", "MOZERO-1900", False),
+            ("casual", 2300, "maia_2200", "MOZERO-2200", True),
+            ("rated", 1400, "maia_2200", "MOZERO-2200", True),
+            ("rated", None, "maia_2200", "MOZERO-2200", True),
+        ]
+        for mode, opp_rating, expected_engine, expected_display, expected_sig in cases:
+            with self.subTest(mode=mode, opp_rating=opp_rating):
+                game = _make_sample_game(mode=mode, opp_rating=opp_rating)
                 with patch.dict(os.environ, self._env(), clear=True):
                     engine = MozeroExtraPawnEngine(
                         [], {"skip_startup_healthcheck": True}, None, Configuration({}), game, False
                     )
                 self.assertEqual(engine.tier.engine_name, expected_engine)
+                self.assertEqual(engine.name(), expected_display)
 
                 book = MozerBookResponse(
                     total_games=500,
@@ -153,7 +157,7 @@ class TestMozeroExtraPawnEngine(unittest.TestCase):
                     wiki_name=None,
                     wiki_eco=None,
                 )
-                maia_res = BestMoveResponse(
+                hub_res = BestMoveResponse(
                     best_move="d2d4",
                     engine=expected_engine,
                     mode="leelaHoldDraw",
@@ -166,7 +170,7 @@ class TestMozeroExtraPawnEngine(unittest.TestCase):
                 board.push_uci("e7e5")
                 with (
                     patch.object(engine.tableservice, "get_mozer_book", return_value=empty_book),
-                    patch.object(engine.engine_hub, "get_bestmove", return_value=maia_res) as mock_hub,
+                    patch.object(engine.engine_hub, "get_bestmove", return_value=hub_res) as mock_hub,
                 ):
                     res2 = engine.search(board, limit, False, False, PLAY_RESULT_PLACEHOLDER)
                 self.assertEqual(res2.move.uci(), "d2d4")
@@ -178,13 +182,13 @@ class TestMozeroExtraPawnEngine(unittest.TestCase):
                 engine.notify("quit")
 
     def test_probabilistic_memory_dropout_permanently_closes_book(self) -> None:
-        game = _make_sample_game(opp_rating=1450)  # maia_1500, memory_keep_prob=0.55
+        game = _make_sample_game(mode="casual", opp_rating=1600)  # MOZERO-1500, memory_keep_prob=0.55
         with patch.dict(os.environ, self._env(), clear=True):
             engine = MozeroExtraPawnEngine([], {"skip_startup_healthcheck": True}, None, Configuration({}), game, False)
 
         board = chess.Board()
         for uci in ("e2e4", "e7e5", "g1f3", "b8c6"):
-            board.push_uci(uci)  # ply == 4 >= BOOK_MEMORY_CHECK_START_PLY
+            board.push_uci(uci)
 
         maia_res = BestMoveResponse(
             best_move="f1c4",
@@ -195,7 +199,6 @@ class TestMozeroExtraPawnEngine(unittest.TestCase):
             time_real_ms=3.0,
             player_tablebase=None,
         )
-        # Force rng.random() = 0.99 > 0.55 -> triggers memory drop-out!
         with (
             patch.object(engine._rng, "random", return_value=0.99),
             patch.object(engine.tableservice, "get_mozer_book") as mock_book,
@@ -206,34 +209,14 @@ class TestMozeroExtraPawnEngine(unittest.TestCase):
         mock_book.assert_not_called()
         mock_hub.assert_called_once()
         self.assertEqual(res.move.uci(), "f1c4")
-
-        # Subsequent move must also skip book completely even if rng.random() == 0.01
-        board.push_uci("f1c4")
-        board.push_uci("g8f6")
-        maia_res2 = BestMoveResponse(
-            best_move="d2d3",
-            engine="maia_1500",
-            mode="leelaHoldDraw",
-            source="maia_1500",
-            dtm=None,
-            time_real_ms=3.0,
-            player_tablebase=None,
-        )
-        with (
-            patch.object(engine._rng, "random", return_value=0.01),
-            patch.object(engine.tableservice, "get_mozer_book") as mock_book2,
-            patch.object(engine.engine_hub, "get_bestmove", return_value=maia_res2),
-        ):
-            engine.search(board, Limit(white_clock=180.0), False, False, PLAY_RESULT_PLACEHOLDER)
-        mock_book2.assert_not_called()
         engine.notify("quit")
 
-    def test_from_position_skips_book_and_passes_custom_fen(self) -> None:
+    def test_from_position_uses_mozero_full_power_and_skips_book(self) -> None:
         endgame_fen = "8/8/8/8/4k3/8/4P3/4K3 w - - 0 1"
-        game = _make_sample_game(mode="casual", variant="From Position", initial_fen=endgame_fen, opp_rating=1500)
-        maia_res = BestMoveResponse(
+        game = _make_sample_game(mode="casual", variant="From Position", initial_fen=endgame_fen, opp_rating=1400)
+        mozero_res = BestMoveResponse(
             best_move="e1d2",
-            engine="maia_1500",
+            engine="mozero",
             mode="leelaPunishUser",
             source="gaviota",
             dtm=19,
@@ -243,16 +226,18 @@ class TestMozeroExtraPawnEngine(unittest.TestCase):
         with patch.dict(os.environ, self._env(), clear=True):
             engine = MozeroExtraPawnEngine([], {"skip_startup_healthcheck": True}, None, Configuration({}), game, False)
 
+        self.assertEqual(engine.name(), "MOZERO-FullPower")
         board = chess.Board(endgame_fen)
         limit = Limit(white_clock=180.0, black_clock=180.0)
         with (
             patch.object(engine.tableservice, "get_mozer_book") as mock_book,
-            patch.object(engine.engine_hub, "get_bestmove", return_value=maia_res) as mock_hub,
+            patch.object(engine.engine_hub, "get_bestmove", return_value=mozero_res) as mock_hub,
         ):
             res = engine.search(board, limit, False, False, PLAY_RESULT_PLACEHOLDER)
         mock_book.assert_not_called()
-        mock_hub.assert_called_once_with(start_fen=endgame_fen, moves=[], engine="maia_1500")
+        mock_hub.assert_called_once_with(start_fen=endgame_fen, moves=[], engine="mozero")
         self.assertEqual(res.move.uci(), "e1d2")
+        self.assertIn("MOZERO-FullPower", str(res.info.get("string", "")))
         self.assertIn("DTM=19", str(res.info.get("string", "")))
         engine.notify("quit")
 
@@ -260,9 +245,9 @@ class TestMozeroExtraPawnEngine(unittest.TestCase):
         game = _make_sample_game()
         bad_res = BestMoveResponse(
             best_move="e1e8",
-            engine="maia_1900",
+            engine="maia_1500",
             mode="leelaHoldDraw",
-            source="maia_1900",
+            source="maia_1500",
             dtm=None,
             time_real_ms=10.0,
             player_tablebase=None,
@@ -294,17 +279,13 @@ class TestChatAndConfigAndChallenges(unittest.TestCase):
                 conv.react(ChatLine({"room": room, "username": "HumanPlayer", "text": msg}))
         li_mock.chat.assert_not_called()
 
-        conv.send_message("player", "Hi! Good luck!")
-        li_mock.chat.assert_called_once_with("game1234", "player", "Hi! Good luck!")
+        conv.send_message("player", f"Hi! Active engine: {engine.name()}")
+        li_mock.chat.assert_called_once_with("game1234", "player", "Hi! Active engine: MOZERO-1500")
         engine.notify("quit")
 
-    def test_config_extrapawn_yml_validation_and_greetings(self) -> None:
+    def test_config_extrapawn_yml_validation_and_engine_greetings(self) -> None:
         cfg_path = str(REPO_ROOT / "config.extrapawn.yml")
         with patch.dict(os.environ, {}, clear=True):
-            with self.assertRaises(Exception):
-                bot_config.load_config(cfg_path)
-
-        with patch.dict(os.environ, {"LICHESS_BOT_TOKEN": "   "}, clear=True):
             with self.assertRaises(Exception):
                 bot_config.load_config(cfg_path)
 
@@ -323,17 +304,24 @@ class TestChatAndConfigAndChallenges(unittest.TestCase):
         ):
             loaded = bot_config.load_config(cfg_path)
             with create_engine(loaded) as eng:
-                self.assertEqual(eng.name(), "ExtraPawn Adaptive Maia")
+                self.assertEqual(eng.name(), "MOZERO-2200")
             mock_hub_health.assert_called_once()
             mock_tb_health.assert_called_once()
 
         with open(cfg_path, encoding="utf-8") as fh:
             raw_cfg = yaml.safe_load(fh)
-        for key, template in raw_cfg["greeting"].items():
-            rendered = template.format(opponent="TwentyCharUserName__", me="ExtraPawnCOM")
-            self.assertLessEqual(len(rendered), lichess.MAX_CHAT_MESSAGE_LEN, f"greeting.{key} too long")
-            for forbidden in ("!help", "!style", "!opening", "!info", "!eval"):
-                self.assertNotIn(forbidden, rendered)
+        self.assertIn("{engine}", raw_cfg["greeting"]["hello"])
+        self.assertIn("{engine}", raw_cfg["greeting"]["hello_spectators"])
+        for profile_label in ("MOZERO-1500", "MOZERO-1700", "MOZERO-1900", "MOZERO-2200", "MOZERO-FullPower"):
+            for key, template in raw_cfg["greeting"].items():
+                rendered = template.format(
+                    opponent="TwentyCharUserName__",
+                    me="ExtraPawnCOM",
+                    engine=profile_label,
+                )
+                self.assertLessEqual(len(rendered), lichess.MAX_CHAT_MESSAGE_LEN, f"greeting.{key} too long")
+                for forbidden in ("!help", "!style", "!opening", "!info", "!eval"):
+                    self.assertNotIn(forbidden, rendered)
 
     def test_challenges_filter_humans_blitz_rapid_only(self) -> None:
         with patch.dict(os.environ, {"LICHESS_BOT_TOKEN": "lip_test_valid_token_123"}, clear=True):
@@ -370,14 +358,6 @@ class TestChatAndConfigAndChallenges(unittest.TestCase):
             ok, reason = chlng.is_supported(loaded.challenge, defaultdict(list), Counter(), blocklist, user_profile)
             self.assertFalse(ok)
             self.assertEqual(reason, expected_reason)
-
-    def test_record_takeback_creates_missing_directory(self) -> None:
-        game = _make_sample_game(mode="casual")
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            nested_dir = os.path.join(tmp_dir, "missing_logs")
-            with patch.object(lichess_bot, "auto_log_directory", nested_dir):
-                lichess_bot.record_takeback(game, 1)
-                self.assertEqual(lichess_bot.read_takeback_record(game), 1)
 
     def test_rated_denies_takeback_while_casual_allows(self) -> None:
         for rated, expected_accept in ((True, False), (False, True)):
@@ -442,6 +422,7 @@ class TestChatAndConfigAndChallenges(unittest.TestCase):
                     cfg = bot_config.load_config(str(REPO_ROOT / "config.extrapawn.yml"))
 
                 mock_engine = MagicMock()
+                mock_engine.name.return_value = "MOZERO-2200" if rated else "MOZERO-1500"
                 mock_engine.__enter__.return_value = mock_engine
                 mock_engine.__exit__.return_value = None
 

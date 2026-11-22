@@ -116,9 +116,9 @@ challenge:
   max_simultaneous_games_per_user: 1
 
 greeting:
-  hello: "Hi {opponent}! Good luck and have a great game!"
+  hello: "Hi {opponent}! Active engine: {engine}. Good luck and have a great game!"
   goodbye: "Good game, {opponent}! Thanks for playing."
-  hello_spectators: "Hi! Welcome to ExtraPawnCOM vs {opponent}."
+  hello_spectators: "Welcome! ExtraPawnCOM ({engine}) vs {opponent}."
   goodbye_spectators: "Thanks for watching!"
 
 matchmaking:
